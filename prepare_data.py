@@ -1,13 +1,20 @@
 import scipy.io
 import numpy as np
 import matplotlib.pyplot as plt
-from skimage import io
+from skimage import io, filters
 # from skimage.future import graph
 import graph_IRGS as graph
 import networkx as nx
 import scipy.sparse as sp
 import torch
+import time
+from utils import *
+from copy import deepcopy
+import argparse
+import torch.nn.functional as F
+import torch.optim as optim
 
+from models import GCN
 
 def encode_onehot(labels):
     classes = set(labels)
@@ -43,74 +50,117 @@ def euclidean_norm_distance_metric(m_sp_i, m_sp_j):
 WEIGHT_SCALAR = 10  # The scalar in the wetghts in the calculation of S_i_w. The greater, the bigger the weights.
 b_landmask = True
 is_normalized = True
-matfile = scipy.io.loadmat('irgs_to_slic.mat')
-node_label = scipy.io.loadmat('label_mat.mat')['label_mat']
-
+matfile = scipy.io.loadmat('D:\\Data\\Semisupervised_graph\\Multi_folder\\20100418_163315\\local_to_slic.mat')
+# node_label = scipy.io.loadmat('label_mat.mat')['label_mat']
+node_label = matfile['label_sp']
 segmention_labels = matfile['irgs_to_slic']
-del matfile
+# del matfile
+shape_sp = scipy.io.loadmat('D:\\Data\\Semisupervised_graph\\Multi_folder\\20100418_163315\\shape_sp.mat')['shape_sp']
+inten_sp = matfile['mean_inten']
+inten_sp = inten_sp[:-1,:]
+
+var_sp = matfile['var_sp']
+var_sp = var_sp[:-1,:]
+
+
+class_list = np.unique(node_label)
+node_label[node_label==4] = 1
+node_label[node_label==5] = 2
+node_label = node_label[:-1]
+
+
 
 hh = io.imread('imagery_HH4_by_4average.tif')
 hv = io.imread('imagery_HV4_by_4average.tif')
 
-# skimage.future.graph does not support 2-channel image
-# img = np.zeros((hh.shape[0],hh.shape[1],2))
-# img[:,:,0] = hh
-# img[:,:,1] = hv
+edge_map0 = filters.sobel(hh)
+edge_map1 = filters.sobel(hv)
+edge_map = edge_map0 + edge_map1
 
-img = hh
+# skimage.future.graph does not support 2-channel image
+img = np.zeros((hh.shape[0],hh.shape[1],2))
+# Normalization
+# Normalize img excluding landmask
+img[:,:,0] = hh/255
+img[:,:,1] = hv/255
+
+# img = hh
 
 #CONSTRUCTING A RAG
-rag = graph.rag_mean_color(img, segmention_labels)
-print("RAG constructed. Time elapsed: {:.4f}s".format(time.time() - t_total))
-# lc = graph.show_rag(segmention_labels, rag, img)
-# io.show()
+start = time.time()
+# rag = graph.rag_mean_color(img, segmention_labels)
+# rag = graph.rag_LCG(img,segmention_labels)
+rag = graph.rag_IRGS_boundary_edge_stregth(img,segmention_labels,edge_map)
+end = time.time()
+m, s = divmod(end - start, 60)
+print("RAG constructed. Time elapsed: {:.0f}m:{:.0f}s".format(m,s))
 
-# TODO: replace there_is_land with b_landmask
-there_is_land = np.any(segmention_labels == 10000000)
-if there_is_land:
-    rag.remove_node(10000000)
+# # TODO: replace there_is_land with b_landmask
+# there_is_land = np.any(segmention_labels == 10000000)
+# if there_is_land:
+#     rag.remove_node(10000000)
 
 num_node = len(rag) # number of superpixels
 
-feats = np.zeros((hh.shape[0],hh.shape[1],2))
-feats[:,:,0] = hh
-feats[:,:,1] = hv
-num_feats = feats.shape[2]
+# feats = np.zeros((hh.shape[0],hh.shape[1],2))
+# feats[:,:,0] = hh
+# feats[:,:,1] = hv
+# num_feats = feats.shape[2]
 
-if is_normalized:
-    for feat in range(0, num_feats):
-        min_f = np.min(feats[:, :, feat])
-        max_f = np.max(feats[:, :, feat])
-        # feats[:, :, feat] = (feats[:, :, feat] - min_f) / (max_f - min_f)
-        feats[:, :, feat] = feats[:, :, feat]/255
+# if is_normalized:
+#     for feat in range(0, num_feats):
+#         # min_f = np.min(feats[:, :, feat])
+#         # max_f = np.max(feats[:, :, feat])
+#         # feats[:, :, feat] = (feats[:, :, feat] - min_f) / (max_f - min_f)
+#         feats[:, :, feat] = feats[:, :, feat]/255
 
 # Thought: replace mean of the coordinatesby with the centre of Minimum Enclosing Rectangle (MER) or circumcircle
-node_coord = np.zeros((num_node, 2), dtype=int)  # mean of the coordinates of each node
-node_feat = np.zeros((num_node, num_feats))
+# node_coord = np.zeros((num_node, 2), dtype=int)  # mean of the coordinates of each node
+# node_feat = np.zeros((num_node, num_feats))
 
-for num_sp in range(0, num_node):  # the labels of superpixels are in range [0, num_node)
-    idxs = np.where(segmention_labels == num_sp)  # gives us a tuple-typed output of rows and columns idxs[0]-->rows
-    node_coord[num_sp, 0] = np.mean(idxs[0])  # mean of rows
-    node_coord[num_sp, 1] = np.mean(idxs[1])  # mean of cols
-    node_feat[num_sp, :] = np.mean(feats[idxs], axis=0)  # mean of feats
+# start = time.time()
+# for num_sp in range(0, num_node):  # the labels of superpixels are in range [0, num_node)
+#     idxs = np.where(segmention_labels == num_sp)  # gives us a tuple-typed output of rows and columns idxs[0]-->rows
+#     # node_coord[num_sp, 0] = np.mean(idxs[0])  # mean of rows
+#     # node_coord[num_sp, 1] = np.mean(idxs[1])  # mean of cols
+#     node_feat[num_sp, :] = np.mean(feats[idxs], axis=0)  # mean of feats
+# end = time.time()
+# m, s = divmod(end - start, 60)
+# print("Feature of each node extracted. Time elapsed: {:.0f}m:{:.0f}s".format(m,s))
 
+# shape_sp = np.zeros((num_node, 1))
+# for n in rag:
+#     shape_sp[n,0] = rag.nodes[n]['shape']
 
+# node_feat = np.zeros((num_node, 4))
+node_feat = np.hstack((inten_sp, var_sp, shape_sp))
 
 adj_mat = nx.adjacency_matrix(rag)
  # build symmetric adjacency matrix
 adj_mat = adj_mat + adj_mat.T.multiply(adj_mat.T > adj_mat) - adj_mat.multiply(adj_mat.T > adj_mat)
 
-labels = encode_onehot(node_label)
+labels = deepcopy(node_label)
+labels = labels - 1
+labels[labels==255] = 0
+labels = labels.flatten()
+# labels = encode_onehot(labels.flatten())
 
-features = normalize(node_feat)
+features = node_feat
+# features = normalize(node_feat)
 adj_mat = normalize(adj_mat + sp.eye(adj_mat.shape[0]))
 
-idx_train = range(140)
-idx_val = range(200, 500)
-idx_test = range(500, 1500)
 
-features = torch.FloatTensor(np.array(features.todense()))
-labels = torch.LongTensor(np.where(labels)[1])
+idx_train =np.where(node_label>0)[0]
+idx_val =np.where(node_label>0)[0]
+idx_test =np.where(node_label>0)[0]
+# idx_train = range(140)
+# idx_val = range(200, 500)
+# idx_test = range(500, 1500)
+
+# features = torch.FloatTensor(np.array(features.todense()))
+features = torch.FloatTensor(np.array(features))
+# labels = torch.LongTensor(np.where(labels)[1])
+labels = torch.LongTensor(labels)
 adj_mat = sparse_mx_to_torch_sparse_tensor(adj_mat)
 
 idx_train = torch.LongTensor(idx_train)
@@ -142,6 +192,34 @@ idx_test = torch.LongTensor(idx_test)
 # W = np.zeros((num_node, num_node))
 
 
+def accuracy(output, labels):
+    preds = output.max(1)[1].type_as(labels)
+    correct = preds.eq(labels).double()
+    correct = correct.sum()
+    return correct / len(labels)
+
+
+# Training settings
+parser = argparse.ArgumentParser()
+parser.add_argument('--no-cuda', action='store_true', default=False,
+                    help='Disables CUDA training.')
+parser.add_argument('--fastmode', action='store_true', default=False,
+                    help='Validate during training pass.')
+parser.add_argument('--seed', type=int, default=42, help='Random seed.')
+parser.add_argument('--epochs', type=int, default=200,
+                    help='Number of epochs to train.')
+parser.add_argument('--lr', type=float, default=0.01,
+                    help='Initial learning rate.')
+parser.add_argument('--weight_decay', type=float, default=5e-4,
+                    help='Weight decay (L2 loss on parameters).')
+parser.add_argument('--hidden', type=int, default=16,
+                    help='Number of hidden units.')
+parser.add_argument('--dropout', type=float, default=0.5,
+                    help='Dropout rate (1 - keep probability).')
+
+args = parser.parse_args()
+args.cuda = not args.no_cuda and torch.cuda.is_available()
+
 # Model and optimizer
 model = GCN(nfeat=features.shape[1],
             nhid=args.hidden,
@@ -153,7 +231,7 @@ optimizer = optim.Adam(model.parameters(),
 if args.cuda:
     model.cuda()
     features = features.cuda()
-    adj = adj.cuda()
+    adj = adj_mat.cuda()
     labels = labels.cuda()
     idx_train = idx_train.cuda()
     idx_val = idx_val.cuda()
@@ -194,3 +272,16 @@ def test():
     print("Test set results:",
           "loss= {:.4f}".format(loss_test.item()),
           "accuracy= {:.4f}".format(acc_test.item()))
+    # result = output.to('cpu').detach().numpy()
+    result = output.max(1)[1].type_as(labels).to('cpu').numpy()
+    scio.savemat('SS_result.mat', {'SS_result':result})
+
+t_total = time.time()
+for epoch in range(args.epochs):
+    train(epoch)
+print("Optimization Finished!")
+print("Total time elapsed: {:.4f}s".format(time.time() - t_total))
+
+
+# Testing
+test()

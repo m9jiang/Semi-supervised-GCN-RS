@@ -8,7 +8,8 @@ from scipy import ndimage as ndi
 from scipy import sparse
 import math
 from skimage import measure, segmentation, util, color
-
+import cv2
+from skimage import io
 
 def _edge_generator_from_csr(csr_matrix):
     """Yield weighted edge triples for use by NetworkX from a CSR matrix.
@@ -294,6 +295,261 @@ class RAG(nx.Graph):
         .. seealso:: :func:`networkx.Graph.add_node`."""
         super(RAG, self).add_node(n)
 
+
+def rag_LCG(image, labels, connectivity=2, sigma=255.0):
+    """
+    """
+    graph = RAG(labels, connectivity=connectivity)
+
+    num_band = image.shape[2]
+    # land is 10000000
+    if labels.max() == 10000000:
+        graph.remove_node(10000000)
+    # m_pCoMean
+    # mean matrix of co-values from which sample covariance can be recovered
+    for n in graph:
+        graph.nodes[n].update({'labels': [n],
+                               'pixel count': 0,
+                                # 'total coordinates': np.array([0,0], dtype=np.double),
+                                'XMean': 0,
+                                'YMean': 0,
+                                # Bounding rectangle
+                                'nTop': 0,
+                                'nBottom': 0,
+                                'nLeft': 0,
+                                'nRight': 0,
+                                'Det_covar': 0,
+                                'variance': np.zeros((num_band,1), dtype=np.double).ravel(),
+                                'CoMean': np.zeros((num_band,num_band), dtype=np.double),
+                               'total intensity': np.array([0, 0], dtype=np.double)})
+
+    for index in np.ndindex(labels.shape):
+        current = labels[index]
+        if current == 10000000:
+            continue
+        graph.nodes[current]['pixel count'] += 1
+        # graph.nodes[current]['total coordinates'] += index
+        graph.nodes[current]['total intensity'] += image[index]
+
+    for n in graph:
+        graph.nodes[n]['total intensity'] = (graph.nodes[n]['total intensity'] / graph.nodes[n]['pixel count'])
+        # graph.nodes[n]['total coordinates'] = (graph.nodes[n]['total coordinates'] / graph.nodes[n]['pixel count'])
+
+    for x, y, d in graph.edges(data=True):
+        diff = graph.nodes[x]['total intensity'] - graph.nodes[y]['total intensity']
+        # diff = graph.nodes[x]['total coordinates'] - graph.nodes[y]['total coordinates']
+        diff = np.linalg.norm(diff)
+        
+        d['weight'] = math.e ** (-(diff ** 2) / sigma)
+
+
+    return graph
+
+def rag_IRGS_boundary(image, labels, edge_map, connectivity=2, season=None, max_is_land=True, sigma=255):
+
+    num_band = image.shape[2]
+    conn = ndi.generate_binary_structure(labels.ndim, connectivity)
+    eroded = ndi.grey_erosion(labels, footprint=conn)
+    dilated = ndi.grey_dilation(labels, footprint=conn)
+    boundaries0 = (eroded != labels)
+    boundaries1 = (dilated != labels)
+    labels_small = np.concatenate((eroded[boundaries0], labels[boundaries1]))
+    labels_large = np.concatenate((labels[boundaries0], dilated[boundaries1]))
+    n = np.max(labels_large) + 1
+
+    # use a dummy broadcast array as data for RAG
+    ones = as_strided(np.ones((1,), dtype=float), shape=labels_small.shape,
+                      strides=(0,))
+    count_matrix = sparse.coo_matrix((ones, (labels_small, labels_large)),
+                                     dtype=int, shape=(n, n)).tocsr()
+    data = np.concatenate((edge_map[boundaries0], edge_map[boundaries1]))
+
+    data_coo = sparse.coo_matrix((data, (labels_small, labels_large)))
+    graph_matrix = data_coo.tocsr()
+    graph_matrix.data /= count_matrix.data
+
+    rag = RAG()
+    # edge stregth needs to be normalized
+    # rag.add_weighted_edges_from(_edge_generator_from_csr(graph_matrix),
+    #                             weight='edge stregth')
+    rag.add_weighted_edges_from(_edge_generator_from_csr(graph_matrix),
+                                weight='weight')
+    rag.add_weighted_edges_from(_edge_generator_from_csr(count_matrix),
+                                weight='count')
+    land = 0
+    if max_is_land:
+        land = labels.max()
+        rag.remove_node(land)
+
+    for n in rag.nodes():
+        # rag.nodes[n].update({'labels': [n]})
+
+        rag.nodes[n].update({'labels': [n],
+                               'pixel count': 0,
+                                # 'total coordinates': np.array([0,0], dtype=np.double),
+                                # 'XMean': 0,
+                                # 'YMean': 0,
+                                'mean coordinates': np.array([0, 0], dtype=np.double),
+                                # 'shape': 0,
+                                # 'season': 0,    #one hot label
+                                # Bounding rectangle
+                                # 'nTop': 0,
+                                # 'nBottom': 0,
+                                # 'nLeft': 0,
+                                # 'nRight': 0,
+                                # 'Det_covar': 0,
+                                'variance': np.zeros((num_band,1), dtype=np.double).ravel(),
+                                # 'CoMean': np.zeros((num_band,num_band), dtype=np.double),
+                               'mean intensity': np.array([0, 0], dtype=np.double)})
+
+    for n in rag:
+        # minimun bounding rectangle
+        mask = np.zeros((image.shape[0], image.shape[1]),dtype='uint8')
+        mask[labels==n] = 1
+        pixel_list = image[labels==n]
+        rag.nodes[n]['variance'] = np.var(pixel_list,axis=0)
+        contours = cv2.findContours(mask,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_NONE)
+        cnt = contours[0]
+        rect = cv2.minAreaRect(cnt[0])
+        box = cv2.boxPoints(rect)
+        box = np.int0(box)
+        l_max = 0
+        l_min = 0
+        l_1 =  np.linalg.norm(box[0]-box[1])
+        l_2 =  np.linalg.norm(box[1]-box[2])
+        if l_1 < l_2:
+            l_min = l_1
+            l_max = l_2
+        else:
+            l_min = l_2
+            l_max = l_1
+        rag.nodes[n]['shape'] = l_min/l_max
+
+    for index in np.ndindex(labels.shape):
+        current = labels[index]
+        if current == land:
+            continue
+        rag.nodes[current]['pixel count'] += 1
+        rag.nodes[current]['mean coordinates'] += index
+        # graph.nodes[current]['total coordinates'] += index
+        rag.nodes[current]['mean intensity'] += image[index]
+
+    for n in rag:
+        rag.nodes[n]['mean intensity'] = (rag.nodes[n]['mean intensity'] / rag.nodes[n]['pixel count'])
+        rag.nodes[n]['mean_coordinates'] = (rag.nodes[n]['mean_coordinates'] / rag.nodes[n]['pixel count'])
+        mask = np.zeros((image.shape[0], image.shape[1]),dtype=np.flaot64)
+        pixel_list = image==n
+
+    for x, y, d in rag.edges(data=True):
+        intensity_diff = rag.nodes[x]['mean intensity'] - rag.nodes[y]['mean intensity']
+        intensity_diff = np.linalg.norm(intensity_diff)
+        euclid_diff = rag.nodes[x]['total coordinates'] - rag.nodes[y]['total coordinates']
+        d['intensity_similarity'] = math.e ** (-(intensity_diff ** 2) / sigma)
+        d['euclid_dis_weight'] = math.e ** (-(euclid_diff ** 2) / sigma)
+
+
+
+
+    return rag
+
+def rag_IRGS_boundary_edge_stregth(image, labels, edge_map, connectivity=2, season=None, max_is_land=True, sigma=255):
+
+    num_band = image.shape[2]
+    conn = ndi.generate_binary_structure(labels.ndim, connectivity)
+    eroded = ndi.grey_erosion(labels, footprint=conn)
+    dilated = ndi.grey_dilation(labels, footprint=conn)
+    boundaries0 = (eroded != labels)
+    boundaries1 = (dilated != labels)
+    labels_small = np.concatenate((eroded[boundaries0], labels[boundaries1]))
+    labels_large = np.concatenate((labels[boundaries0], dilated[boundaries1]))
+    n = np.max(labels_large) + 1
+
+    # use a dummy broadcast array as data for RAG
+    ones = as_strided(np.ones((1,), dtype=float), shape=labels_small.shape,
+                      strides=(0,))
+    count_matrix = sparse.coo_matrix((ones, (labels_small, labels_large)),
+                                     dtype=int, shape=(n, n)).tocsr()
+    data = np.concatenate((edge_map[boundaries0], edge_map[boundaries1]))
+
+    data_coo = sparse.coo_matrix((data, (labels_small, labels_large)))
+    graph_matrix = data_coo.tocsr()
+    graph_matrix.data /= count_matrix.data
+
+    rag = RAG()
+    # edge stregth needs to be normalized
+    # rag.add_weighted_edges_from(_edge_generator_from_csr(graph_matrix),
+    #                             weight='edge stregth')
+    rag.add_weighted_edges_from(_edge_generator_from_csr(graph_matrix),
+                                weight='weight')
+    rag.add_weighted_edges_from(_edge_generator_from_csr(count_matrix),
+                                weight='boundary length')
+    land = 0
+    if max_is_land:
+        land = labels.max()
+        rag.remove_node(land)
+
+    # for n in rag.nodes():
+    #     rag.nodes[n].update({'labels': [n],
+    #                            'pixel count': 0,
+    #                             'mean coordinates': np.array([0, 0], dtype=np.double),
+    #                             'variance': np.zeros((num_band,1), dtype=np.double).ravel(),
+    #                            'mean intensity': np.array([0, 0], dtype=np.double)})
+    for n in rag.nodes():
+        rag.nodes[n].update({'labels': [n],
+                                'shape': 0})
+
+    # for n in rag:
+    #     # pixel_list = image[labels==n]
+    #     # rag.nodes[n]['variance'] = np.var(pixel_list,axis=0)
+    #     # minimun bounding rectangle
+    #     mask = np.zeros((image.shape[0], image.shape[1]),dtype='uint8')
+    #     mask[labels==n] = 1
+    #     contours = cv2.findContours(mask,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_NONE)
+    #     cnt = contours[0]
+    #     rect = cv2.minAreaRect(cnt[0])
+    #     box = cv2.boxPoints(rect)
+    #     box = np.int0(box)
+    #     l_max = 0
+    #     l_min = 0
+    #     l_1 =  np.linalg.norm(box[0]-box[1])
+    #     l_2 =  np.linalg.norm(box[1]-box[2])
+    #     if l_1 < l_2:
+    #         l_min = l_1
+    #         l_max = l_2
+    #     else:
+    #         l_min = l_2
+    #         l_max = l_1
+        
+    #     if l_1 == 0 and l_2 == 0:
+    #         rag.nodes[n]['shape'] = 0
+    #     elif l_1 == 0 or l_2 == 0:
+    #         rag.nodes[n]['shape'] = 0
+    #     else:
+    #         rag.nodes[n]['shape'] = l_min/l_max
+
+    # for index in np.ndindex(labels.shape):
+    #     current = labels[index]
+    #     if current == land:
+    #         continue
+    #     rag.nodes[current]['pixel count'] += 1
+    #     rag.nodes[current]['mean coordinates'] += index
+    #     # graph.nodes[current]['total coordinates'] += index
+    #     rag.nodes[current]['mean intensity'] += image[index]
+
+    # for n in rag:
+    #     rag.nodes[n]['mean intensity'] = (rag.nodes[n]['mean intensity'] / rag.nodes[n]['pixel count'])
+    #     rag.nodes[n]['mean_coordinates'] = (rag.nodes[n]['mean_coordinates'] / rag.nodes[n]['pixel count'])
+    #     pixel_list = image[labels==n]
+    #     rag.nodes[n]['variance'] = np.var(pixel_list,axis=0)
+
+    # for x, y, d in rag.edges(data=True):
+    #     intensity_diff = rag.nodes[x]['mean intensity'] - rag.nodes[y]['mean intensity']
+    #     intensity_diff = np.linalg.norm(intensity_diff)
+    #     euclid_diff = rag.nodes[x]['total coordinates'] - rag.nodes[y]['total coordinates']
+    #     d['intensity_similarity'] = math.e ** (-(intensity_diff ** 2) / sigma)
+    #     d['euclid_dis_weight'] = math.e ** (-(euclid_diff ** 2) / sigma)
+
+    return rag
 
 def rag_mean_color(image, labels, connectivity=2, mode='distance',
                    sigma=255.0):
