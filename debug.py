@@ -59,9 +59,9 @@ from skimage import segmentation, filters, color
 # label_sp_from_GT(segmention_labels, ground_truth)
 
 
-matfile = scipy.io.loadmat('D:\\Data\\Semisupervised_graph\\Multi_folder\\20100418_163315\\local_to_slic.mat')
+# matfile = scipy.io.loadmat('D:\\Data\\Semisupervised_graph\\Multi_folder\\20100418_163315\\local_to_slic.mat')
 
-node_label = matfile['label_sp']
+# node_label = matfile['label_sp']
 
 
 print('done')

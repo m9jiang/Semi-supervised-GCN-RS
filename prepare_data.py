@@ -50,28 +50,27 @@ def euclidean_norm_distance_metric(m_sp_i, m_sp_j):
 WEIGHT_SCALAR = 10  # The scalar in the wetghts in the calculation of S_i_w. The greater, the bigger the weights.
 b_landmask = True
 is_normalized = True
-matfile = scipy.io.loadmat('D:\\Data\\Semisupervised_graph\\Multi_folder\\20100418_163315\\local_to_slic.mat')
-# node_label = scipy.io.loadmat('label_mat.mat')['label_mat']
+matfile = scipy.io.loadmat('D:\\Data\\Semisupervised_graph\\Multi_folder\\20100510_035620\\local_to_slic.mat')
 node_label = matfile['label_sp']
 segmention_labels = matfile['irgs_to_slic']
 # del matfile
-shape_sp = scipy.io.loadmat('D:\\Data\\Semisupervised_graph\\Multi_folder\\20100418_163315\\shape_sp.mat')['shape_sp']
+# shape_sp = scipy.io.loadmat('D:\\Data\\Semisupervised_graph\\Multi_folder\\20100510_035620\\shape_sp.mat')['shape_sp']
+shape_sp = scipy.io.loadmat('D:\\Data\\Semisupervised_graph\\Multi_folder\\20100510_035620\\shape_sp.mat')['shape_sp']
+
 inten_sp = matfile['mean_inten']
 inten_sp = inten_sp[:-1,:]
-
 var_sp = matfile['var_sp']
 var_sp = var_sp[:-1,:]
 
-
-class_list = np.unique(node_label)
-node_label[node_label==4] = 1
-node_label[node_label==5] = 2
+# class_list = np.unique(node_label)
+# node_label[node_label==1] = 1
+node_label[node_label==4] = 2
+node_label[node_label==5] = 3
 node_label = node_label[:-1]
 
 
-
-hh = io.imread('imagery_HH4_by_4average.tif')
-hv = io.imread('imagery_HV4_by_4average.tif')
+hh = io.imread('D:\\Data\\Semisupervised_graph\\Multi_folder\\20100510_035620\\imagery_HH4_by_4average.tif')
+hv = io.imread('D:\\Data\\Semisupervised_graph\\Multi_folder\\20100510_035620\\imagery_HV4_by_4average.tif')
 
 edge_map0 = filters.sobel(hh)
 edge_map1 = filters.sobel(hv)
@@ -84,7 +83,7 @@ img = np.zeros((hh.shape[0],hh.shape[1],2))
 img[:,:,0] = hh/255
 img[:,:,1] = hv/255
 
-# img = hh
+# Save 
 
 #CONSTRUCTING A RAG
 start = time.time()
@@ -273,8 +272,9 @@ def test():
           "loss= {:.4f}".format(loss_test.item()),
           "accuracy= {:.4f}".format(acc_test.item()))
     # result = output.to('cpu').detach().numpy()
-    result = output.max(1)[1].type_as(labels).to('cpu').numpy()
-    scio.savemat('SS_result.mat', {'SS_result':result})
+    # result = output.max(1)[1].type_as(labels).to('cpu').numpy()
+    result = output.max(1)[1].to('cpu').numpy()
+    scio.savemat('D:\\Data\\Semisupervised_graph\\Multi_folder\\20100510_035620\\SS_result.mat', {'SS_result':result})
 
 t_total = time.time()
 for epoch in range(args.epochs):

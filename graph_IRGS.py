@@ -519,7 +519,7 @@ def rag_IRGS_boundary_edge_stregth(image, labels, edge_map, connectivity=2, seas
     #     else:
     #         l_min = l_2
     #         l_max = l_1
-        
+    #     # Or l_max = l_max + 1e-8
     #     if l_1 == 0 and l_2 == 0:
     #         rag.nodes[n]['shape'] = 0
     #     elif l_1 == 0 or l_2 == 0:
@@ -550,6 +550,77 @@ def rag_IRGS_boundary_edge_stregth(image, labels, edge_map, connectivity=2, seas
     #     d['euclid_dis_weight'] = math.e ** (-(euclid_diff ** 2) / sigma)
 
     return rag
+
+
+
+def rag_IRGS_boundary_edge_stregth_shape(image, labels, edge_map, connectivity=2, season=None, max_is_land=True, sigma=255):
+
+    conn = ndi.generate_binary_structure(labels.ndim, connectivity)
+    eroded = ndi.grey_erosion(labels, footprint=conn)
+    dilated = ndi.grey_dilation(labels, footprint=conn)
+    boundaries0 = (eroded != labels)
+    boundaries1 = (dilated != labels)
+    labels_small = np.concatenate((eroded[boundaries0], labels[boundaries1]))
+    labels_large = np.concatenate((labels[boundaries0], dilated[boundaries1]))
+    n = np.max(labels_large) + 1
+
+    # use a dummy broadcast array as data for RAG
+    ones = as_strided(np.ones((1,), dtype=float), shape=labels_small.shape,
+                      strides=(0,))
+    count_matrix = sparse.coo_matrix((ones, (labels_small, labels_large)),
+                                     dtype=int, shape=(n, n)).tocsr()
+    data = np.concatenate((edge_map[boundaries0], edge_map[boundaries1]))
+
+    data_coo = sparse.coo_matrix((data, (labels_small, labels_large)))
+    graph_matrix = data_coo.tocsr()
+    graph_matrix.data /= count_matrix.data
+
+    rag = RAG()
+    rag.add_weighted_edges_from(_edge_generator_from_csr(graph_matrix),
+                                weight='weight')
+    rag.add_weighted_edges_from(_edge_generator_from_csr(count_matrix),
+                                weight='boundary length')
+    land = 0
+    if max_is_land:
+        land = labels.max()
+        rag.remove_node(land)
+
+    for n in rag.nodes():
+        rag.nodes[n].update({'labels': [n],
+                                'shape': 0})
+
+    for n in rag:
+        # pixel_list = image[labels==n]
+        # rag.nodes[n]['variance'] = np.var(pixel_list,axis=0)
+        # minimun bounding rectangle
+        mask = np.zeros((image.shape[0], image.shape[1]),dtype='uint8')
+        mask[labels==n] = 1
+        contours = cv2.findContours(mask,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_NONE)
+        cnt = contours[0]
+        rect = cv2.minAreaRect(cnt[0])
+        box = cv2.boxPoints(rect)
+        box = np.int0(box)
+        l_max = 0
+        l_min = 0
+        l_1 =  np.linalg.norm(box[0]-box[1])
+        l_2 =  np.linalg.norm(box[1]-box[2])
+        if l_1 < l_2:
+            l_min = l_1
+            l_max = l_2
+        else:
+            l_min = l_2
+            l_max = l_1
+        # Or l_max = l_max + 1e-8
+        if l_1 == 0 and l_2 == 0:
+            rag.nodes[n]['shape'] = 0
+        elif l_1 == 0 or l_2 == 0:
+            rag.nodes[n]['shape'] = 0
+        else:
+            rag.nodes[n]['shape'] = l_min/l_max
+
+
+    return rag
+
 
 def rag_mean_color(image, labels, connectivity=2, mode='distance',
                    sigma=255.0):
